@@ -1,0 +1,21 @@
+download_timestamp,query_type,query_name,keywords,geo,category,timeframe,gprop,tz,status,n_months,first_month,last_month,last_month_partial,file
+2026-10-05T14:58:47,single,alpha_gal,alpha gal,AU,0,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat0_single_alpha_gal_2026-10-05.csv
+2026-10-05T14:58:54,single,Alpha-gal_syndrome,Alpha-gal syndrome,AU,0,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat0_single_Alpha-gal_syndrome_2026-10-05.csv
+2026-10-05T14:59:02,single,mammalian_meat_allergy,mammalian meat allergy,AU,0,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat0_single_mammalian_meat_allergy_2026-10-05.csv
+2026-10-05T14:59:08,single,meat_allergy,meat allergy,AU,0,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat0_single_meat_allergy_2026-10-05.csv
+2026-10-05T14:59:15,single,tick_allergy,tick allergy,AU,0,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat0_single_tick_allergy_2026-10-05.csv
+2026-10-05T14:59:22,single,paralysis_tick,paralysis tick,AU,0,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat0_single_paralysis_tick_2026-10-05.csv
+2026-10-05T14:59:29,single,ticks,ticks,AU,0,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat0_single_ticks_2026-10-05.csv
+2026-10-05T14:59:37,single,food_allergy,food allergy,AU,0,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat0_single_food_allergy_2026-10-05.csv
+2026-10-05T14:59:44,coquery,key_terms,alpha gal; mammalian meat allergy; meat allergy; tick allergy; food allergy,AU,0,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat0_coquery_key_terms_2026-10-05.csv
+2026-10-05T14:59:51,coquery,ags_terminology,alpha gal; Alpha-gal syndrome; mammalian meat allergy; meat allergy; tick allergy,AU,0,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat0_coquery_ags_terminology_2026-10-05.csv
+2026-10-05T14:59:59,single,alpha_gal,alpha gal,AU,45,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat45_single_alpha_gal_2026-10-05.csv
+2026-10-05T15:00:06,single,Alpha-gal_syndrome,Alpha-gal syndrome,AU,45,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat45_single_Alpha-gal_syndrome_2026-10-05.csv
+2026-10-05T15:00:13,single,mammalian_meat_allergy,mammalian meat allergy,AU,45,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat45_single_mammalian_meat_allergy_2026-10-05.csv
+2026-10-05T15:00:20,single,meat_allergy,meat allergy,AU,45,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat45_single_meat_allergy_2026-10-05.csv
+2026-10-05T15:00:27,single,tick_allergy,tick allergy,AU,45,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat45_single_tick_allergy_2026-10-05.csv
+2026-10-05T15:01:09,single,paralysis_tick,paralysis tick,AU,45,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat45_single_paralysis_tick_2026-10-05.csv
+2026-10-05T15:01:16,single,ticks,ticks,AU,45,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat45_single_ticks_2026-10-05.csv
+2026-10-05T15:01:23,single,food_allergy,food allergy,AU,45,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat45_single_food_allergy_2026-10-05.csv
+2026-10-05T15:01:30,coquery,key_terms,alpha gal; mammalian meat allergy; meat allergy; tick allergy; food allergy,AU,45,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat45_coquery_key_terms_2026-10-05.csv
+2026-10-05T15:01:38,coquery,ags_terminology,alpha gal; Alpha-gal syndrome; mammalian meat allergy; meat allergy; tick allergy,AU,45,2014-01-01 2026-10-01,web,-600,ok,154,2014-01-01,2026-10-01,True,gt_monthly_au_cat45_coquery_ags_terminology_2026-10-05.csv

@@ -1,0 +1,92 @@
+---
+title: "Analysis of google trends data"
+author: Alexander W. Gofton
+ddate: today
+format:
+  gfm:
+    toc: true
+    toc-depth: 3
+  html:
+    page-layout: full
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    fig-width: 10
+    fig-height: 10
+    theme:
+      light: cosmo
+      dark: darkly
+execute:
+  warning: false
+  message: false
+  cache: false
+knitr:
+  opts_chunk:
+    results: hold
+---
+
+
+```{r setup}
+library(tidyverse)
+library(patchwork)
+```
+
+```{r file-prefixes}
+# Set file directory and date
+home_dir <- "/Users/gof005/Library/CloudStorage/OneDrive-CSIRO/OneDrive - Docs/01_Projects/alpha_gal/03_aGal_infoepi"
+
+files_dir <- paste0(home_dir, "/data/")
+
+# Define search terms
+search_terms <- c(
+  "alpha_gal",
+  "alpha-gal_syndrome",
+  "food_allergy",
+  "mammalian_meat_allergy",
+  "paralysis_tick",
+  "red_meat_allergy",
+  "tick_allergy"
+)
+```
+
+# Load data
+
+```{r}
+source(paste0(home_dir, "/code/combine_daily_data_function.R"))
+
+# Create a list to store data frames
+trend_data <- list()
+
+combine_daily_data("2026-02-13")
+combine_daily_data("2026-02-14")
+combine_daily_data("2026-02-15")
+combine_daily_data("2026-02-16")
+combine_daily_data("2026-02-17")
+combine_daily_data("2026-02-18")
+combine_daily_data("2026-02-19")
+combine_daily_data("2026-02-20")
+combine_daily_data("2026-02-21")
+combine_daily_data("2026-02-22")
+combine_daily_data("2026-02-23")
+combine_daily_data("2026-02-24")
+combine_daily_data("2026-02-25")
+#combine_daily_data("2026-02-26")
+```
+
+# Average data
+
+```{r}
+source(paste0(home_dir, "/code/average_daily_data_function.R"))
+
+# For just the dates you already have processed
+date_list <- c("2026-02-13", "2026-02-14", "2026-02-15", "2026-02-16")
+results <- plot_average_trends(date_list)
+
+tail(results$summary_stats)
+```
+
+```{r}
+# View the plot
+results$plot
+```

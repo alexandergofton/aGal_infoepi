@@ -1,0 +1,36 @@
+# ---- OS / editor junk ----
+.DS_Store
+Thumbs.db
+*~
+*.swp
+.vscode/
+.idea/
+.positron/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+.ipynb_checkpoints/
+
+# ---- R / RStudio ----
+.Rhistory
+.RData
+.Rapp.history
+.Rproj.user/
+Rplots.pdf
+
+# ---- Quarto rendered outputs (rebuild with `quarto render`) ----
+*.html
+*_files/
+*_cache/
+.quarto/
+/.luarc.json
+
+# ---- Scheduler logs and nohup output ----
+code/logs/
+*.log
+*.nohup
+nohup.out

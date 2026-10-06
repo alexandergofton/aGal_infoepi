@@ -1,0 +1,1874 @@
+---
+title: "Public Awareness and Information-Seeking for Alpha-Gal Syndrome / Mammalian Meat Allergy in Australia"
+subtitle: "Infodemiology re-analysis of Google Trends (Jul–Oct 2026 downloads) and MediaCloud news data"
+author: "Alexander W. Gofton"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: show
+    code-tools: true
+    code-summary: "Show code"
+    embed-resources: true
+    page-layout: full
+    fig-width: 10
+    fig-height: 6
+    fig-dpi: 150
+    theme: cosmo
+execute:
+  warning: false
+  message: false
+  cache: false
+---
+
+# Overview {.unnumbered}
+
+This document re-analyses Google Trends search data and MediaCloud online news data to
+quantify and explore public awareness of, and information-seeking about, alpha-gal syndrome
+(AGS) / mammalian meat allergy (MMA) in Australia. It follows the structure of the earlier
+analysis (`old_analysis/code/ags_awareness_analysis.qmd`, based on Feb–Mar 2026 downloads),
+applied to the new downloads (Jul–Oct 2026), and extends it in several places.
+
+**What is new or changed relative to the old analysis**
+
+| Area | Old analysis | This analysis |
+|---|---|---|
+| Google Trends data | 8 terms, Feb–Mar 2026 downloads (Feb 2026 only partially observed) | 8 terms (`red meat allergy` dropped; `ticks` added), 14 downloads Jul–Oct 2026; Feb 2026 now a complete month |
+| File loading | Hard-coded download dates | Term and download date parsed from file names, so new files are picked up automatically |
+| Reliability | CV across downloads | CV, plus agreement between the two download batches, and agreement with the old (Feb–Mar 2026) data |
+| Cross-term comparison | Levels of different terms plotted on one axis | Shapes only: each term was queried separately, so RSV is scaled to *its own* maximum (see callout in @sec-descriptive) |
+| Media data | Off-topic articles removed by regex | Same approach, plus an explicit exclusion table, syndication de-duplication, and data to Jun 2026 |
+| Seasonality | KW tests (raw and STL-detrended) | Same, plus a cyclic seasonal smooth in the GAM |
+| Trend | GAM fit to `round(RSV) + 1`; joinpoint fit to log annual means | GAM fit to RSV directly (quasi-Poisson does not need integers or +1); trend derivatives to show *when* interest was rising; joinpoint fit to monthly data with seasonal adjustment |
+| Media–search association | Spearman, CCF, Granger | Same, **with the CCF lag direction corrected**, plus a GAM estimating the media effect after accounting for trend and season |
+| Media events | ITS for Aug 2023 and Nov 2025 | ITS for Aug 2023; Nov 2025 – Feb 2026 assessed as excess search interest over a pre-event forecast (too few post-event months for ITS) |
+
+: Summary of changes from the previous analysis {.striped}
+
+# Setup
+
+## Packages
+
+```{r}
+#| label: packages
+
+# Data wrangling and plotting (ggplot2, dplyr, tidyr, readr, purrr, stringr, lubridate, forcats)
+library(tidyverse)
+# Combining multiple ggplots into a single figure
+library(patchwork)
+# Generalised additive models (GAMs) with penalised splines
+library(mgcv)
+# Stationarity tests (ADF, KPSS)
+library(tseries)
+# Coefficient tests and Durbin-Watson test
+library(lmtest)
+# Newey-West heteroskedasticity- and autocorrelation-consistent (HAC) standard errors
+library(sandwich)
+# Segmented (joinpoint) regression
+library(segmented)
+# Vector autoregression models and Granger causality tests
+library(vars)
+# Axis formatting helpers
+library(scales)
+
+# Explicitly use dplyr::select / dplyr::filter: MASS and vars (loaded by other
+# packages) also export `select`, which would otherwise mask dplyr's version
+select <- dplyr::select
+filter <- dplyr::filter
+```
+
+## Paths and global settings
+
+```{r}
+#| label: paths
+
+# Quarto runs code from the folder containing this .qmd file
+# (new_analysis/code), so the project root is two levels up.
+proj_dir      <- normalizePath(file.path("..", ".."))
+gt_dir        <- file.path(proj_dir, "data")                         # new Google Trends downloads
+media_dir     <- file.path(proj_dir, "data", "media_cloud")          # MediaCloud exports
+old_gt_dir    <- file.path(proj_dir, "old_analysis", "data")         # Feb-Mar 2026 downloads
+fig_dir       <- file.path(proj_dir, "new_analysis", "figures")      # saved figures (PNG)
+processed_dir <- file.path(proj_dir, "new_analysis", "processed_data") # saved processed tables
+
+dir.create(fig_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(processed_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Fix the random seed so that any simulation-based results are reproducible
+set.seed(20261005)
+
+# Southern Hemisphere tick season for Ixodes holocyclus: October to March.
+# Used throughout as the "warm season" (equivalent to Romeiser et al.'s
+# May-Sep indicator for the US lone star tick, inverted for Australia).
+tick_season_months <- c(10, 11, 12, 1, 2, 3)
+
+# Small helper to save a ggplot / patchwork object to the figures folder
+save_fig <- function(plot, filename, width = 25, height = 15) {
+  ggsave(file.path(fig_dir, filename), plot = plot,
+         width = width, height = height, units = "cm", dpi = 300)
+}
+```
+
+## Search term metadata
+
+Each search term is given a readable label and assigned to a group. The order here is the
+order used in all tables and figures.
+
+```{r}
+#| label: term-metadata
+
+term_info <- tribble(
+  ~search_term,             ~term_label,               ~term_group,
+  "alpha_gal",              "Alpha-gal",               "AGS/MMA-specific",
+  "alpha-gal_syndrome",     "Alpha-gal syndrome",      "AGS/MMA-specific",
+  "mammalian_meat_allergy", "Mammalian meat allergy",  "AGS/MMA-specific",
+  "meat_allergy",           "Meat allergy",            "AGS/MMA-related (broad)",
+  "tick_allergy",           "Tick allergy",            "AGS/MMA-related (broad)",
+  "red_meat_allergy",       "Red meat allergy",        "AGS/MMA-related (broad)", # old data only
+  "paralysis_tick",         "Paralysis tick",          "Tick vector",
+  "ticks",                  "Ticks",                   "Tick vector",
+  "food_allergy",           "Food allergy",            "Control"
+) |>
+  # Store labels as an ordered factor so facets/legends follow the order above
+  mutate(term_label = factor(term_label, levels = term_label))
+
+# Named vector for quick look-ups: term_labels["alpha_gal"] -> "Alpha-gal"
+term_labels <- setNames(as.character(term_info$term_label), term_info$search_term)
+```
+
+# Data loading
+
+## Google Trends: provenance
+
+The Google Trends data were downloaded with `code/google_trends_downloader.py` (pytrends),
+run once per day by `code/schedule_run.sh`. The table below documents the search strategy in
+line with the Nuti et al. (2014) and Mavragani & Ochoa (2019) reporting checklists.
+
+| Item | Value |
+|---|---|
+| Source | Google Trends via `pytrends` (`interest_over_time`) |
+| Search terms | `alpha gal`, `Alpha-gal syndrome`, `mammalian meat allergy`, `meat allergy`, `tick allergy`, `paralysis tick`, `ticks`, `food allergy` (control) |
+| Search type | Search terms (not Topics); no quotation marks or operators |
+| Query structure | Each term queried **on its own** (one term per payload) |
+| Geography | Australia (`geo = "AU"`), national |
+| Time range | `2014-02-01 2026-02-01` → monthly resolution, Feb 2014 – Feb 2026 (145 months) |
+| Category | `cat = 0` = **All categories** (note: the downloader comment says "Health", but Health is category 45) |
+| Google property | Web Search (`gprop = ""`) |
+| Retrieval dates | 1–3 Jul 2026 (6 terms) and 22 Sep – 2 Oct 2026 (8 terms); see table below |
+| Data pulls | Up to 14 per term; RSV averaged across pulls |
+
+: Google Trends search strategy {.striped}
+
+## Google Trends: read all downloads
+
+Files follow the naming pattern `google_trends_monthly_au_<term>_<YYYY-MM-DD>.csv`. Rather than
+hard-coding dates, we list every matching file and extract the term and download date from the
+file name.
+
+```{r}
+#| label: gt-reader
+
+# Read one Google Trends CSV and return it in long ("tidy") format with one row per month.
+read_gt_file <- function(path) {
+  # Split the file name into (term, download date) using a regular expression.
+  # The term may itself contain underscores/hyphens, so we anchor on the date at the end.
+  parts <- str_match(
+    basename(path),
+    "^google_trends_monthly_au_(.+)_(\\d{4}-\\d{2}-\\d{2})\\.csv$"
+  )
+
+  # Read everything as character first so that unusual values (e.g. "<1") don't break parsing
+  df <- read_csv(path, col_types = cols(.default = col_character()))
+
+  tibble(
+    # Dates may be ISO (2014-02-01) or day/month/year (1/2/2014) depending on how the file
+    # was saved; parse_date_time tries both formats.
+    date = as.Date(parse_date_time(df[[1]], orders = c("Ymd", "dmY"))),
+    # The second column holds RSV. Google reports "<1" for very small non-zero values;
+    # we code these as 0.5. Everything else is converted to a number.
+    rsv = if_else(df[[2]] == "<1", 0.5, suppressWarnings(as.numeric(df[[2]]))),
+    # File names use "Alpha-gal_syndrome" (new) and "alpha-gal_syndrome" (old);
+    # lower-casing makes the term identifiers consistent.
+    search_term = str_to_lower(parts[, 2]),
+    download_date = as.Date(parts[, 3])
+  )
+}
+
+# Convenience wrapper: find all Google Trends CSVs in a folder and read them all
+read_gt_folder <- function(folder) {
+  list.files(folder,
+             pattern = "^google_trends_monthly_au_.+_\\d{4}-\\d{2}-\\d{2}\\.csv$",
+             full.names = TRUE) |>
+    map(read_gt_file) |>
+    list_rbind()
+}
+```
+
+```{r}
+#| label: load-trends
+
+trends_raw <- read_gt_folder(gt_dir) |>
+  # Label each download as belonging to the first (Jul 2026) or second (Sep-Oct 2026) batch
+  mutate(
+    batch = if_else(download_date < as.Date("2026-08-01"), "Jul 2026", "Sep–Oct 2026"),
+    term_label = factor(term_labels[search_term], levels = levels(term_info$term_label))
+  )
+
+# Sanity checks: every download should have the same 145 months
+stopifnot(!anyNA(trends_raw$rsv), !anyNA(trends_raw$date))
+
+trends_raw |>
+  group_by(term_label) |>
+  summarise(
+    n_downloads   = n_distinct(download_date),
+    jul_2026      = n_distinct(download_date[batch == "Jul 2026"]),
+    sep_oct_2026  = n_distinct(download_date[batch == "Sep–Oct 2026"]),
+    first_month   = min(date),
+    last_month    = max(date),
+    n_months      = n_distinct(date),
+    .groups = "drop"
+  ) |>
+  knitr::kable(
+    col.names = c("Search term", "Total downloads", "Jul 2026", "Sep–Oct 2026",
+                  "First month", "Last month", "Months"),
+    caption = "Google Trends downloads available per search term"
+  )
+```
+
+::: {.callout-note}
+`tick allergy` and `ticks` were only downloaded in the Sep–Oct 2026 batch, so they are averaged over
+11 downloads; the remaining six terms are averaged over 14.
+:::
+
+## Average RSV across downloads
+
+Google Trends returns a fresh random sample of searches each time it is queried, so the same
+query returns slightly different values on different days, especially for low-volume terms.
+Following Romeiser et al. (2024) and Hölzl et al. (2024), we average across daily downloads and
+report the variability between them.
+
+```{r}
+#| label: average-trends
+
+trends_avg <- trends_raw |>
+  group_by(search_term, term_label, date) |>
+  summarise(
+    n_downloads = n(),
+    mean_rsv    = mean(rsv),
+    sd_rsv      = sd(rsv),
+    .groups = "drop"
+  ) |>
+  mutate(
+    # Coefficient of variation (%): SD relative to the mean; undefined when the mean is 0
+    cv_rsv   = if_else(mean_rsv > 0, sd_rsv / mean_rsv * 100, NA_real_),
+    # 95% confidence interval for the mean using the t distribution (n is small)
+    se_rsv   = sd_rsv / sqrt(n_downloads),
+    lower_ci = pmax(mean_rsv - qt(0.975, n_downloads - 1) * se_rsv, 0), # RSV cannot be < 0
+    upper_ci = mean_rsv + qt(0.975, n_downloads - 1) * se_rsv,
+    # Time variables used by the models later on
+    year        = year(date),
+    month_num   = month(date),
+    month_lab   = month(date, label = TRUE),
+    t_years     = decimal_date(date) - 2014,          # years since Jan 2014 (centred for stability)
+    tick_season = as.integer(month_num %in% tick_season_months),
+    # Harmonic (Fourier) terms for an annual seasonal cycle (1st and 2nd harmonics)
+    sin1 = sin(2 * pi * month_num / 12), cos1 = cos(2 * pi * month_num / 12),
+    sin2 = sin(4 * pi * month_num / 12), cos2 = cos(4 * pi * month_num / 12)
+  ) |>
+  left_join(term_info |> select(search_term, term_group), by = "search_term") |>
+  arrange(term_label, date)
+
+# The terms actually present in the new data, in display order
+search_terms <- term_info$search_term[term_info$search_term %in% trends_avg$search_term]
+
+# Save the averaged series for re-use elsewhere
+write_csv(trends_avg, file.path(processed_dir, "google_trends_monthly_au_averaged.csv"))
+```
+
+## MediaCloud online news data
+
+MediaCloud exports (generated 22 Sep 2026) contain daily counts of matching Australian online news
+articles, the individual article list, and top sources/words.
+
+```{r}
+#| label: load-media
+
+# Find each export by its suffix so that new timestamps don't require code changes
+media_file <- function(suffix) {
+  list.files(media_dir, pattern = paste0(suffix, "\\.csv$"), full.names = TRUE)[1]
+}
+
+# Daily counts: `count` = matching articles, `total_count` = all articles in the collection
+media_counts <- read_csv(media_file("counts"), show_col_types = FALSE) |>
+  mutate(date = as.Date(date))
+
+# One row per matching article
+media_content <- read_csv(media_file("content"), show_col_types = FALSE) |>
+  mutate(publish_date = as.Date(publish_date)) |>
+  distinct(url, .keep_all = TRUE)   # guard against duplicate rows for the same URL
+
+media_sources <- read_csv(media_file("top-sources"), show_col_types = FALSE)
+media_words   <- read_csv(media_file("top-words"), show_col_types = FALSE)
+
+cat("Daily count records:", nrow(media_counts),
+    "| date range:", format(min(media_counts$date)), "to", format(max(media_counts$date)), "\n")
+cat("Matching articles in daily counts:", sum(media_counts$count), "\n")
+cat("Individual articles in content export:", nrow(media_content),
+    "| publish dates:", format(min(media_content$publish_date)), "to",
+    format(max(media_content$publish_date)), "\n")
+```
+
+### Removing off-topic articles
+
+The MediaCloud keyword query also matched some articles that are not about AGS/MMA. The most
+common are pig-to-human kidney xenotransplantation stories (the "alpha-gal" gene is knocked out in
+donor pigs), Lyme-disease stories, non-English articles, and a few articles with no apparent
+relevance. These are excluded below; the full list of exclusions is shown so the decisions can be
+checked.
+
+```{r}
+#| label: media-filter
+
+# Patterns (case-insensitive) that identify off-topic article titles
+offtopic_patterns <- regex(
+  paste(
+    "pig.*(kidney|transplant)", "kidney.*pig", "xenotransplant",  # xenotransplantation
+    "lyme disease treatment", "cypru",                            # Lyme treatment abroad
+    "lyme disease, the condition",                                # Bella Hadid / Lyme
+    "ghosts, masturbation",                                       # unrelated listicle
+    "helen o.connell",                                            # Australia Day honours
+    "new york .present",                                          # unrelated
+    sep = "|"
+  ),
+  ignore_case = TRUE
+)
+
+media_content <- media_content |>
+  mutate(
+    exclusion_reason = case_when(
+      language != "en"                                   ~ "Non-English",
+      str_detect(title, regex("pig|kidney|xenotransplant", ignore_case = TRUE)) &
+        str_detect(title, offtopic_patterns)             ~ "Xenotransplantation",
+      str_detect(title, offtopic_patterns)               ~ "Off-topic",
+      TRUE                                               ~ NA_character_
+    ),
+    relevant = is.na(exclusion_reason)
+  )
+
+media_content |>
+  filter(!relevant) |>
+  arrange(publish_date) |>
+  select(publish_date, media_name, exclusion_reason, title) |>
+  knitr::kable(col.names = c("Date", "Source", "Reason", "Title"),
+               caption = "Articles excluded as off-topic")
+
+media_relevant <- media_content |> filter(relevant)
+
+cat("\nExcluded:", sum(!media_content$relevant), "articles | Retained:",
+    nrow(media_relevant), "AGS/MMA-relevant articles\n")
+```
+
+### Syndicated articles
+
+Many stories are syndicated across mastheads in the same network (e.g. SMH / The Age / Brisbane
+Times / WAtoday). We keep the article count (comparable with the old analysis) and also count
+*unique stories* (de-duplicated by normalised title within a month) as a measure of distinct
+news events.
+
+```{r}
+#| label: media-monthly
+
+media_relevant <- media_relevant |>
+  mutate(
+    month = floor_date(publish_date, "month"),
+    # Normalise titles: lower case, remove punctuation and extra spaces, so that
+    # minor formatting differences don't create spurious "unique" stories
+    title_norm = title |> str_to_lower() |> str_remove_all("[[:punct:]]") |> str_squish()
+  )
+
+# Every month from the start of the Google Trends series to the end of the media data,
+# so months with no articles are explicitly 0 rather than missing
+all_media_months <- tibble(
+  date = seq(as.Date("2014-02-01"), floor_date(max(media_counts$date), "month"), by = "month")
+)
+
+media_monthly <- media_relevant |>
+  group_by(date = month) |>
+  summarise(articles = n(), stories = n_distinct(title_norm), .groups = "drop") |>
+  right_join(all_media_months, by = "date") |>
+  # Add the total size of the MediaCloud collection each month (all Australian articles)
+  left_join(
+    media_counts |>
+      group_by(date = floor_date(date, "month")) |>
+      summarise(total_articles = sum(total_count), .groups = "drop"),
+    by = "date"
+  ) |>
+  mutate(across(c(articles, stories), ~ replace_na(.x, 0L))) |>
+  arrange(date)
+
+write_csv(media_monthly, file.path(processed_dir, "mediacloud_monthly_relevant_articles.csv"))
+
+# Last month for which Google Trends data are available; media after this date can be
+# shown descriptively but cannot be compared with search data
+gt_last_month <- max(trends_avg$date)
+
+cat("Months with >= 1 relevant article (Feb 2014 - ", format(gt_last_month, "%b %Y"), "): ",
+    sum(media_monthly$articles[media_monthly$date <= gt_last_month] > 0), " of ",
+    sum(media_monthly$date <= gt_last_month), "\n", sep = "")
+cat("Relevant articles after the Google Trends window (",
+    format(gt_last_month %m+% months(1), "%b %Y"), " onward): ",
+    sum(media_monthly$articles[media_monthly$date > gt_last_month]), "\n", sep = "")
+```
+
+# Data reliability
+
+## Sampling variability across downloads
+
+The coefficient of variation (CV) measures how much RSV for a given month differs between
+downloads. We classify terms by their median monthly CV (months with a non-zero mean only):
+< 25% = high reliability, 25–100% = moderate, > 100% = low (the old analysis used > 100% to flag
+unreliable terms).
+
+```{r}
+#| label: cv-summary
+
+cv_summary <- trends_avg |>
+  group_by(search_term, term_label) |>
+  summarise(
+    n_downloads     = max(n_downloads),
+    pct_zero_months = mean(mean_rsv == 0) * 100,   # months where every download was 0
+    median_cv       = median(cv_rsv, na.rm = TRUE),
+    mean_cv         = mean(cv_rsv, na.rm = TRUE),
+    # CV restricted to recent years, when AGS-specific terms have more volume
+    median_cv_2020on = median(cv_rsv[date >= as.Date("2020-01-01")], na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(reliability = case_when(
+    median_cv < 25   ~ "High",
+    median_cv <= 100 ~ "Moderate",
+    TRUE             ~ "Low"
+  ))
+
+knitr::kable(
+  cv_summary |> select(-search_term),
+  col.names = c("Search term", "Downloads", "% months all-zero", "Median CV (%)",
+                "Mean CV (%)", "Median CV 2020+ (%)", "Reliability"),
+  digits = 1,
+  caption = "Sampling variability of monthly RSV across daily downloads"
+)
+
+# Terms flagged as low reliability are carried forward and noted in later sections
+unreliable_terms <- cv_summary |> filter(reliability == "Low") |> pull(search_term)
+```
+
+```{r}
+#| label: fig-spaghetti
+#| fig-cap: "Individual daily downloads (thin grey lines) and their mean (blue) for each term. The spread of grey lines shows how much Google Trends' random sampling changes the series from day to day."
+#| fig-height: 9
+
+p_spaghetti <- ggplot(trends_raw, aes(x = date, y = rsv)) +
+  geom_line(aes(group = download_date), colour = "grey60", alpha = 0.4, linewidth = 0.3) +
+  geom_line(data = trends_avg, aes(y = mean_rsv), colour = "#2166ac", linewidth = 0.6) +
+  facet_wrap(~ term_label, ncol = 2, scales = "free_y") +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  labs(x = NULL, y = "Relative search volume (RSV)") +
+  theme_bw()
+
+p_spaghetti
+save_fig(p_spaghetti, "fig_s1_individual_downloads.png", height = 22)
+```
+
+## Agreement between download batches (Jul vs Sep–Oct 2026)
+
+If Google's sampling were stable, the two batches would give near-identical series. We compare
+the batch means month-by-month using Spearman's rho (rank agreement) and Lin's concordance
+correlation coefficient (CCC; agreement on the actual values, 1 = perfect).
+
+```{r}
+#| label: batch-agreement
+
+# Lin's concordance correlation coefficient
+lins_ccc <- function(x, y) {
+  2 * cov(x, y) / (var(x) + var(y) + (mean(x) - mean(y))^2)
+}
+
+batch_means <- trends_raw |>
+  group_by(search_term, term_label, batch, date) |>
+  summarise(mean_rsv = mean(rsv), .groups = "drop") |>
+  pivot_wider(names_from = batch, values_from = mean_rsv) |>
+  filter(!is.na(`Jul 2026`), !is.na(`Sep–Oct 2026`))  # terms present in both batches only
+
+batch_means |>
+  group_by(term_label) |>
+  summarise(
+    spearman_rho = cor(`Jul 2026`, `Sep–Oct 2026`, method = "spearman"),
+    lins_ccc     = lins_ccc(`Jul 2026`, `Sep–Oct 2026`),
+    mean_abs_diff = mean(abs(`Jul 2026` - `Sep–Oct 2026`)),
+    .groups = "drop"
+  ) |>
+  knitr::kable(col.names = c("Search term", "Spearman rho", "Lin's CCC", "Mean |difference| (RSV)"),
+               digits = 3, caption = "Agreement between Jul 2026 and Sep–Oct 2026 batch means")
+```
+
+## Agreement with the previous (Feb–Mar 2026) downloads
+
+The previous analysis used downloads made in Feb–Mar 2026. Comparing the averaged series from
+that period with the new averaged series is a test of how reproducible Google Trends results
+are over time. **Feb 2026 is excluded** from this comparison: it was incomplete when most of the
+old data were downloaded (e.g. `alpha gal` Feb 2026 ≈ 50 in the old data vs ≈ 99 now).
+
+```{r}
+#| label: old-vs-new
+
+old_avg <- read_gt_folder(old_gt_dir) |>
+  group_by(search_term, date) |>
+  summarise(old_rsv = mean(rsv), old_n = n(), .groups = "drop")
+
+old_new <- trends_avg |>
+  select(search_term, term_label, date, new_rsv = mean_rsv) |>
+  inner_join(old_avg, by = c("search_term", "date")) |>   # terms present in both
+  filter(date < as.Date("2026-02-01"))
+
+old_new_summary <- old_new |>
+  group_by(term_label) |>
+  summarise(
+    old_downloads = max(old_n),
+    spearman_rho  = cor(old_rsv, new_rsv, method = "spearman"),
+    lins_ccc      = lins_ccc(old_rsv, new_rsv),
+    mean_abs_diff = mean(abs(old_rsv - new_rsv)),
+    # Ratio of totals: < 1 means the new series sits proportionally lower than the old one
+    scale_ratio   = sum(new_rsv) / sum(old_rsv),
+    .groups = "drop"
+  )
+
+# Peak month of each term in the new and old data, to explain any re-scaling
+peak_months <- trends_avg |>
+  group_by(search_term) |>
+  summarise(new_peak = format(date[which.max(mean_rsv)], "%b %Y"), .groups = "drop") |>
+  left_join(old_avg |> group_by(search_term) |>
+              summarise(old_peak = format(date[which.max(old_rsv)], "%b %Y")), by = "search_term")
+
+old_new_summary <- old_new_summary |>
+  left_join(term_info |> select(search_term, term_label), by = "term_label") |>
+  left_join(peak_months, by = "search_term") |>
+  select(-search_term)
+
+knitr::kable(old_new_summary,
+             col.names = c("Search term", "Old downloads", "Spearman rho", "Lin's CCC",
+                           "Mean |difference| (RSV)", "New / old scale ratio",
+                           "Peak month (new)", "Peak month (old)"),
+             digits = 3,
+             caption = "Agreement between old (Feb–Mar 2026) and new (Jul–Oct 2026) averaged series, Feb 2014 – Jan 2026")
+```
+
+A high Spearman rho with a lower CCC and a scale ratio below 1 means the *shape* of the series
+is reproduced but its *level* has shifted proportionally. That happens when the month anchoring
+RSV = 100 changes. For example, `meat allergy` and `tick allergy` now peak in the complete
+Feb 2026 month (coroner's finding), which pushes every earlier month down. This is a direct
+illustration of why RSV levels should only be compared within a single download set.
+
+```{r}
+#| label: fig-old-vs-new
+#| fig-cap: "Old (Feb–Mar 2026) vs new (Jul–Oct 2026) averaged monthly RSV, Feb 2014 – Jan 2026. Points on the dashed line indicate perfect agreement."
+#| fig-height: 7
+
+p_old_new <- ggplot(old_new, aes(x = old_rsv, y = new_rsv)) +
+  geom_abline(linetype = "dashed", colour = "grey40") +
+  geom_point(alpha = 0.5, size = 1, colour = "#2166ac") +
+  facet_wrap(~ term_label, scales = "free", ncol = 3) +
+  labs(x = "Mean RSV, old downloads (Feb–Mar 2026)", y = "Mean RSV, new downloads (Jul–Oct 2026)") +
+  theme_bw()
+
+p_old_new
+save_fig(p_old_new, "fig_s2_old_vs_new_downloads.png", height = 18)
+```
+
+# Descriptive trends in search interest {#sec-descriptive}
+
+::: {.callout-important}
+## Comparing search terms
+
+Each term was queried **separately**, so each series is scaled so that its own busiest month = 100.
+An RSV of 50 for "alpha gal" and 50 for "food allergy" do **not** represent the same number of
+searches. Comparisons between terms in this document are therefore about the *shape and timing*
+of the series (when they rise, peak, or vary seasonally), not about their relative size. Comparing
+absolute popularity (e.g. "alpha-gal" vs "mammalian meat allergy" terminology) requires the terms
+to be queried together in one payload (up to 5 terms).
+:::
+
+## Time series of all search terms
+
+```{r}
+#| label: fig-trends-faceted
+#| fig-cap: "Mean monthly Google Trends RSV for AGS/MMA-related search terms in Australia, Feb 2014 – Feb 2026. Ribbons show 95% confidence intervals across daily downloads; shaded background marks tick season (Oct–Mar)."
+#| fig-height: 10
+
+# Rectangles marking each Oct-Mar tick season, for use as background shading
+tick_season_rects <- tibble(
+  xmin = as.Date(paste0(2013:2025, "-10-01")),
+  xmax = as.Date(paste0(2014:2026, "-03-31"))
+) |>
+  mutate(xmin = pmax(xmin, as.Date("2014-02-01")), xmax = pmin(xmax, gt_last_month))
+
+p_trends <- ggplot(trends_avg, aes(x = date, y = mean_rsv)) +
+  geom_rect(data = tick_season_rects, inherit.aes = FALSE,
+            aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+            fill = "#fdae61", alpha = 0.12) +
+  geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci), fill = "#2166ac", alpha = 0.25) +
+  geom_line(colour = "#2166ac", linewidth = 0.5) +
+  facet_wrap(~ term_label, scales = "free_y", ncol = 2) +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  labs(x = NULL, y = "Mean relative search volume (RSV)") +
+  theme_bw()
+
+p_trends
+save_fig(p_trends, "fig1_trends_faceted.png", width = 30, height = 25)
+```
+
+## Shape comparison of AGS/MMA-specific terms
+
+To compare *timing* across terms, each series is smoothed with a 3-month centred rolling mean
+and re-scaled so its own maximum = 1.
+
+```{r}
+#| label: fig-ags-terms
+#| fig-cap: "Timing of search interest across AGS/MMA-related terms (3-month rolling mean, each scaled to its own maximum). Because terms were queried separately, only the shape of each line is comparable, not its height relative to other terms."
+#| fig-height: 5
+
+ags_terms <- c("alpha_gal", "alpha-gal_syndrome", "mammalian_meat_allergy",
+               "meat_allergy", "tick_allergy")
+
+p_ags_shape <- trends_avg |>
+  filter(search_term %in% ags_terms) |>
+  group_by(term_label) |>
+  mutate(
+    # 3-month centred moving average (NA at the two ends of the series)
+    rsv_smooth = stats::filter(mean_rsv, rep(1 / 3, 3), sides = 2) |> as.numeric(),
+    rsv_scaled = rsv_smooth / max(rsv_smooth, na.rm = TRUE)
+  ) |>
+  ungroup() |>
+  ggplot(aes(x = date, y = rsv_scaled, colour = term_label)) +
+  geom_line(linewidth = 0.7, na.rm = TRUE) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  labs(x = NULL, y = "Search interest (scaled to each term's maximum)", colour = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+p_ags_shape
+save_fig(p_ags_shape, "fig2_ags_terms_shape.png", height = 13)
+```
+
+## Summary statistics per term
+
+"First sustained interest" is the first month of the first run of at least 3 consecutive months
+with non-zero mean RSV. This is less sensitive to isolated sampling blips than the first non-zero
+month.
+
+```{r}
+#| label: summary-table
+
+# Returns the date at which the first run of >= `min_run` consecutive TRUE values begins
+first_sustained <- function(dates, nonzero, min_run = 3) {
+  runs   <- rle(nonzero)
+  ends   <- cumsum(runs$lengths)
+  starts <- ends - runs$lengths + 1
+  idx    <- which(runs$values & runs$lengths >= min_run)
+  if (length(idx) == 0) return(as.Date(NA))
+  dates[starts[idx[1]]]
+}
+
+term_summary <- trends_avg |>
+  group_by(term_label) |>
+  summarise(
+    first_nonzero     = min(date[mean_rsv > 0]),
+    first_sustained   = first_sustained(date, mean_rsv > 0),
+    peak_month        = date[which.max(mean_rsv)],
+    peak_rsv          = max(mean_rsv),
+    mean_2015_2019    = mean(mean_rsv[year %in% 2015:2019]),
+    mean_2021_2025    = mean(mean_rsv[year %in% 2021:2025]),
+    pct_nonzero       = mean(mean_rsv > 0) * 100,
+    .groups = "drop"
+  ) |>
+  mutate(fold_change = mean_2021_2025 / mean_2015_2019)
+
+knitr::kable(
+  term_summary |> mutate(across(c(first_nonzero, first_sustained, peak_month), ~ format(.x, "%b %Y"))),
+  col.names = c("Search term", "First non-zero", "First sustained", "Peak month", "Peak RSV",
+                "Mean RSV 2015–19", "Mean RSV 2021–25", "% months non-zero", "Fold change"),
+  digits = 1,
+  caption = "Summary of search interest by term. Fold change = mean RSV 2021–25 / mean RSV 2015–19 (within-term only)."
+)
+```
+
+## Annual search interest heatmap
+
+Only complete calendar years (2015–2025) are shown, since 2014 lacks January and 2026 has only
+January–February.
+
+```{r}
+#| label: fig-heatmap
+#| fig-cap: "Annual mean RSV by search term (complete years 2015–2025). Colours are scaled within each term (0 = that term's lowest year, 1 = its highest year), consistent with the within-term normalisation of Google Trends."
+#| fig-height: 5
+
+annual_trends <- trends_avg |>
+  filter(year %in% 2015:2025) |>
+  group_by(search_term, term_label, year) |>
+  summarise(annual_mean = mean(mean_rsv), .groups = "drop") |>
+  group_by(term_label) |>
+  mutate(annual_scaled = rescale(annual_mean)) |>  # scales::rescale to 0-1 within each term
+  ungroup()
+
+p_heat <- ggplot(annual_trends, aes(x = factor(year), y = fct_rev(term_label), fill = annual_scaled)) +
+  geom_tile(colour = "white", linewidth = 0.5) +
+  geom_text(aes(label = round(annual_mean, 1)), size = 2.8,
+            colour = if_else(annual_trends$annual_scaled > 0.6, "black", "white")) +
+  scale_fill_viridis_c(option = "inferno", name = "Scaled\nannual mean") +
+  labs(x = NULL, y = NULL) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+
+p_heat
+save_fig(p_heat, "fig3_annual_heatmap.png", height = 12)
+```
+
+# Media coverage
+
+## Media timeline vs search interest
+
+```{r}
+#| label: key-events
+
+# Key media events identified from the article table (see next section).
+key_events <- tribble(
+  ~date,         ~event,
+  "2016-10-01",  "Oct 2016: East-coast meat allergy linked to tick bites",
+  "2018-09-01",  "Aug–Sep 2018: Regional NSW media cluster on tick health risks",
+  "2023-08-01",  "Aug 2023: 'Ticks thriving' / US 450,000 cases coverage",
+  "2025-11-01",  "Nov 2025: Death of NSW teen; coronial inquest",
+  "2026-02-01",  "26 Feb 2026: Coroner finds teen died of MMA",
+  "2026-05-01",  "May 2026: MMA 'surging' in Sydney's north / Central Coast"
+) |>
+  mutate(date = as.Date(date), short = format(date, "%b %Y"))
+
+knitr::kable(key_events |> select(date, event), col.names = c("Month", "Event"),
+             caption = "Key media events")
+```
+
+```{r}
+#| label: fig-media-timeline
+#| fig-cap: "Monthly AGS/MMA-relevant Australian online news articles (top) and mean Google Trends RSV for 'alpha gal' and 'mammalian meat allergy'. Dashed lines mark key media events. Grey shading marks months after the Google Trends window (no search data)."
+#| fig-height: 9
+
+x_limits <- c(as.Date("2014-02-01"), max(media_monthly$date))
+
+# Shared elements: event lines + shading of the period without search data
+timeline_layers <- list(
+  annotate("rect", xmin = gt_last_month %m+% months(1), xmax = x_limits[2] + 15,
+           ymin = -Inf, ymax = Inf, fill = "grey80", alpha = 0.5),
+  geom_vline(data = key_events, aes(xintercept = date), linetype = "dashed",
+             colour = "#b2182b", linewidth = 0.4),
+  scale_x_date(limits = x_limits + c(-15, 15), date_breaks = "1 year", date_labels = "%Y"),
+  theme_bw()
+)
+
+p_media_bar <- ggplot(media_monthly, aes(x = date, y = articles)) +
+  timeline_layers +
+  geom_col(fill = "#d95f02", width = 25) +
+  geom_text(data = key_events, aes(x = date, y = Inf, label = short), inherit.aes = FALSE,
+            angle = 90, hjust = 1.1, vjust = -0.4, size = 2.8, colour = "#b2182b") +
+  labs(x = NULL, y = "Relevant articles")
+
+# Helper that draws one search-term panel
+search_panel <- function(term) {
+  trends_avg |>
+    filter(search_term == term) |>
+    ggplot(aes(x = date, y = mean_rsv)) +
+    timeline_layers +
+    geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci), fill = "#2166ac", alpha = 0.25) +
+    geom_line(colour = "#2166ac", linewidth = 0.5) +
+    labs(x = NULL, y = paste0("RSV: ", term_labels[term]))
+}
+
+p_media_timeline <- p_media_bar / search_panel("alpha_gal") / search_panel("mammalian_meat_allergy")
+
+p_media_timeline
+save_fig(p_media_timeline, "fig4_media_vs_search_timeline.png", width = 30, height = 22)
+```
+
+## Article list
+
+```{r}
+#| label: media-events-table
+
+media_relevant |>
+  arrange(publish_date) |>
+  # Collapse syndicated copies of the same story into one row listing all outlets
+  group_by(month, title_norm) |>
+  summarise(
+    date    = min(publish_date),
+    title   = first(title),
+    outlets = paste(sort(unique(media_name)), collapse = ", "),
+    n       = n(),
+    .groups = "drop"
+  ) |>
+  arrange(date) |>
+  select(date, title, n, outlets) |>
+  knitr::kable(col.names = c("First published", "Title", "Articles", "Outlets"),
+               caption = "Unique AGS/MMA-relevant stories (syndicated copies combined)")
+```
+
+## Media coverage by year
+
+```{r}
+#| label: fig-media-by-year
+#| fig-cap: "Number of AGS/MMA-relevant Australian online news articles per year. 2026 includes January–June only (the end of the MediaCloud export)."
+#| fig-height: 4.5
+
+media_by_year <- media_relevant |>
+  count(year = year(publish_date), name = "articles") |>
+  left_join(media_relevant |> distinct(year = year(publish_date), title_norm) |>
+              count(year, name = "stories"), by = "year") |>
+  pivot_longer(c(articles, stories), names_to = "measure", values_to = "n") |>
+  mutate(measure = recode(measure, articles = "All articles", stories = "Unique stories"))
+
+p_media_year <- ggplot(media_by_year, aes(x = factor(year), y = n, fill = measure)) +
+  geom_col(position = position_dodge(preserve = "single"), width = 0.8) +
+  scale_fill_manual(values = c("All articles" = "#d95f02", "Unique stories" = "#7570b3")) +
+  labs(x = NULL, y = "Count", fill = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+p_media_year
+save_fig(p_media_year, "fig5_media_by_year.png", height = 12)
+```
+
+## MediaCloud collection size
+
+Changes in raw article counts can reflect changes in how many Australian outlets MediaCloud
+collects, not just changes in coverage of AGS/MMA. The total size of the collection is shown for
+context.
+
+```{r}
+#| label: fig-media-collection
+#| fig-cap: "Total number of Australian online news articles in the MediaCloud collection per month (all topics)."
+#| fig-height: 3.5
+
+p_collection <- ggplot(media_monthly, aes(x = date, y = total_articles)) +
+  geom_line(colour = "grey30") +
+  scale_y_continuous(labels = label_comma()) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  labs(x = NULL, y = "All articles in collection") +
+  theme_bw()
+
+p_collection
+save_fig(p_collection, "fig_s3_mediacloud_collection_size.png", height = 9)
+```
+
+## Top media sources
+
+```{r}
+#| label: media-sources
+
+knitr::kable(head(media_sources, 15), col.names = c("Source", "Articles", "Proportion"),
+             digits = 3,
+             caption = "Top 15 sources in the MediaCloud export (before off-topic exclusions)")
+```
+
+# Seasonality
+
+If information-seeking were driven by tick exposure, AGS/MMA searches would peak during the
+*I. holocyclus* activity period (Oct–Mar). Because long-term trends can create spurious
+month-to-month differences (later months in a rising series are higher), seasonality is assessed
+after removing the trend using STL decomposition (seasonal-trend decomposition by loess).
+
+## Detrended seasonal profiles
+
+```{r}
+#| label: stl-detrend
+
+# STL-decompose one term's series and return the detrended values (seasonal + remainder)
+stl_detrend <- function(term_data) {
+  ts_obj <- ts(term_data$mean_rsv,
+               start = c(year(min(term_data$date)), month(min(term_data$date))),
+               frequency = 12)
+  fit <- stl(ts_obj, s.window = "periodic", robust = TRUE)
+  term_data |>
+    mutate(
+      stl_trend = as.numeric(fit$time.series[, "trend"]),
+      detrended = as.numeric(fit$time.series[, "seasonal"] + fit$time.series[, "remainder"])
+    )
+}
+
+trends_detrended <- trends_avg |>
+  group_by(search_term) |>
+  group_modify(~ stl_detrend(.x)) |>
+  ungroup()
+```
+
+```{r}
+#| label: fig-seasonality
+#| fig-cap: "Detrended search interest by calendar month (STL seasonal + remainder components). Boxes are coloured by tick season (Oct–Mar) vs cool season (Apr–Sep). Values above 0 indicate months with more searching than the long-term trend predicts."
+#| fig-height: 9
+
+p_season <- trends_detrended |>
+  mutate(season = if_else(tick_season == 1, "Tick season (Oct–Mar)", "Cool season (Apr–Sep)")) |>
+  ggplot(aes(x = month_lab, y = detrended, fill = season)) +
+  geom_hline(yintercept = 0, colour = "grey40") +
+  geom_boxplot(outlier.size = 0.6, linewidth = 0.3) +
+  facet_wrap(~ term_label, scales = "free_y", ncol = 2) +
+  scale_fill_manual(values = c("Tick season (Oct–Mar)" = "#fc8d59",
+                               "Cool season (Apr–Sep)" = "#91bfdb")) +
+  labs(x = NULL, y = "Detrended RSV", fill = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom", axis.text.x = element_text(size = 7))
+
+p_season
+save_fig(p_season, "fig6_seasonality_detrended.png", width = 28, height = 24)
+```
+
+## Tests for seasonality
+
+* **Kruskal–Wallis (KW)**: do RSV values differ between calendar months? Run on raw and
+  detrended values.
+* **Wilcoxon rank-sum**: is detrended RSV higher in tick season (Oct–Mar) than cool season
+  (Apr–Sep)?
+
+P-values are adjusted across terms with the Benjamini–Hochberg (BH) method.
+
+```{r}
+#| label: seasonality-tests
+
+seasonality_results <- trends_detrended |>
+  group_by(term_label) |>
+  summarise(
+    kw_raw_p       = kruskal.test(mean_rsv ~ factor(month_num))$p.value,
+    kw_detrended_p = kruskal.test(detrended ~ factor(month_num))$p.value,
+    # Median detrended RSV in each season, and the difference (tick minus cool)
+    median_tick    = median(detrended[tick_season == 1]),
+    median_cool    = median(detrended[tick_season == 0]),
+    wilcox_p       = wilcox.test(detrended[tick_season == 1], detrended[tick_season == 0])$p.value,
+    .groups = "drop"
+  ) |>
+  mutate(
+    across(c(kw_raw_p, kw_detrended_p, wilcox_p), ~ p.adjust(.x, method = "BH"), .names = "{.col}_bh"),
+    season_diff = median_tick - median_cool
+  )
+
+knitr::kable(
+  seasonality_results |>
+    select(term_label, kw_raw_p_bh, kw_detrended_p_bh, median_tick, median_cool,
+           season_diff, wilcox_p_bh),
+  col.names = c("Search term", "KW p (raw, BH)", "KW p (detrended, BH)",
+                "Median detrended RSV (tick season)", "Median detrended RSV (cool season)",
+                "Difference", "Wilcoxon p (BH)"),
+  digits = c(0, 4, 4, 2, 2, 2, 4),
+  caption = "Seasonality tests on raw and STL-detrended RSV"
+)
+```
+
+# Trend quantification
+
+## Quasi-Poisson GAMs
+
+For each term we fit a generalised additive model (GAM):
+
+$$\log(E[\text{RSV}_t]) = \beta_0 + f_1(\text{time}_t) + f_2(\text{month}_t)$$
+
+* $f_1$ is a penalised cubic regression spline for the long-term trend (basis size k = 20; the
+  penalty chooses how wiggly it needs to be).
+* $f_2$ is a **cyclic** spline over calendar month, so December joins smoothly to January.
+* The quasi-Poisson family suits non-negative, overdispersed data. Unlike the old analysis,
+  RSV is used directly: quasi-Poisson does not require integer counts, so there is no need to
+  round or add 1.
+* Smoothness is selected by REML.
+
+A second model replaces $f_2$ with a binary tick-season indicator (Oct–Mar = 1) to give a single
+incidence rate ratio (IRR) comparable with Romeiser et al. (2024).
+
+```{r}
+#| label: gam-models
+
+fit_term_gams <- function(term_data) {
+  # Model 1: trend + cyclic seasonal smooth
+  m_cc <- gam(
+    mean_rsv ~ s(t_years, bs = "cr", k = 20) + s(month_num, bs = "cc", k = 8),
+    knots  = list(month_num = c(0.5, 12.5)),  # so month 12 and month 1 are neighbours
+    family = quasipoisson(),
+    method = "REML",
+    data   = term_data
+  )
+  # Model 2: trend + binary tick-season indicator
+  m_bin <- gam(
+    mean_rsv ~ s(t_years, bs = "cr", k = 20) + tick_season,
+    family = quasipoisson(),
+    method = "REML",
+    data   = term_data
+  )
+  list(m_cc = m_cc, m_bin = m_bin, data = term_data)
+}
+
+# Fit models for every term; store in a named list
+gam_results <- trends_avg |>
+  split(~ search_term) |>
+  map(fit_term_gams)
+gam_results <- gam_results[search_terms]   # put in display order
+
+gam_summary <- imap(gam_results, function(r, term) {
+  s_cc  <- summary(r$m_cc)
+  s_bin <- summary(r$m_bin)
+  b     <- s_bin$p.table["tick_season", ]
+  # k-index < 1 with a small p-value suggests the trend basis may be too small
+  kc    <- k.check(r$m_cc)
+  # Lag-1 autocorrelation of residuals: GAM standard errors assume independence
+  ac1   <- acf(residuals(r$m_cc, type = "pearson"), plot = FALSE)$acf[2]
+  tibble(
+    search_term      = term,
+    term_label       = term_labels[term],
+    dev_explained    = s_cc$dev.expl * 100,
+    dispersion       = s_cc$scale,
+    trend_edf        = s_cc$s.table["s(t_years)", "edf"],
+    season_edf       = s_cc$s.table["s(month_num)", "edf"],
+    season_p         = s_cc$s.table["s(month_num)", "p-value"],
+    tick_irr         = exp(b["Estimate"]),
+    tick_irr_lo      = exp(b["Estimate"] - 1.96 * b["Std. Error"]),
+    tick_irr_hi      = exp(b["Estimate"] + 1.96 * b["Std. Error"]),
+    tick_p           = b["Pr(>|t|)"],
+    k_index          = kc["s(t_years)", "k-index"],
+    resid_acf1       = ac1
+  )
+}) |>
+  list_rbind() |>
+  mutate(season_p_bh = p.adjust(season_p, "BH"), tick_p_bh = p.adjust(tick_p, "BH"))
+
+knitr::kable(
+  gam_summary |>
+    mutate(tick_irr_ci = sprintf("%.2f (%.2f–%.2f)", tick_irr, tick_irr_lo, tick_irr_hi)) |>
+    select(term_label, dev_explained, dispersion, trend_edf, season_edf, season_p_bh,
+           tick_irr_ci, tick_p_bh),
+  col.names = c("Search term", "Deviance explained (%)", "Dispersion", "Trend edf",
+                "Season edf", "Season p (BH)", "Tick-season IRR (95% CI)", "IRR p (BH)"),
+  digits = c(0, 1, 2, 1, 2, 4, 0, 4),
+  caption = "Quasi-Poisson GAM results. edf = effective degrees of freedom (1 = linear; higher = more wiggly). IRR > 1 means higher searching in Oct–Mar than Apr–Sep, after accounting for the trend."
+)
+
+knitr::kable(
+  gam_summary |> select(term_label, k_index, resid_acf1),
+  col.names = c("Search term", "Trend k-index", "Residual lag-1 autocorrelation"),
+  digits = 3,
+  caption = "GAM diagnostics. k-index well below 1 suggests the trend basis is too small. Positive residual autocorrelation means p-values are somewhat optimistic."
+)
+```
+
+## GAM trend fits
+
+The fitted trend below is the GAM prediction with the seasonal smooth removed, i.e. the
+long-term level of interest with seasonal ups and downs averaged out.
+
+```{r}
+#| label: gam-predictions
+
+gam_trend_pred <- imap(gam_results, function(r, term) {
+  pr <- predict(r$m_cc, newdata = r$data, type = "link", se.fit = TRUE,
+                exclude = "s(month_num)")
+  r$data |>
+    mutate(
+      trend     = exp(pr$fit),                          # back-transform from log scale
+      trend_lo  = exp(pr$fit - 1.96 * pr$se.fit),
+      trend_hi  = exp(pr$fit + 1.96 * pr$se.fit),
+      fitted    = fitted(r$m_cc)                        # trend + season
+    )
+}) |>
+  list_rbind()
+```
+
+```{r}
+#| label: fig-gam-trends
+#| fig-cap: "Quasi-Poisson GAM fits. Grey points = observed mean RSV; blue line = fitted values (trend + season); red line and ribbon = long-term trend with 95% CI (seasonal component removed)."
+#| fig-height: 10
+
+p_gam <- ggplot(gam_trend_pred, aes(x = date)) +
+  geom_point(aes(y = mean_rsv), colour = "grey50", size = 0.6) +
+  geom_line(aes(y = fitted), colour = "#2166ac", linewidth = 0.4, alpha = 0.7) +
+  geom_ribbon(aes(ymin = trend_lo, ymax = trend_hi), fill = "#b2182b", alpha = 0.2) +
+  geom_line(aes(y = trend), colour = "#b2182b", linewidth = 0.8) +
+  facet_wrap(~ term_label, scales = "free_y", ncol = 2) +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  labs(x = NULL, y = "RSV") +
+  theme_bw()
+
+p_gam
+save_fig(p_gam, "fig7_gam_trends.png", width = 30, height = 25)
+```
+
+## When was search interest increasing?
+
+The first derivative of the trend smooth gives its rate of change. On the log scale, a
+derivative $d$ corresponds to a growth rate of $100(e^{d} - 1)$% per year. Periods where the 95%
+confidence interval lies entirely above 0 are periods of statistically significant growth.
+
+```{r}
+#| label: gam-derivatives
+
+# Finite-difference derivative of the trend smooth with pointwise 95% CI.
+# lpmatrix gives the linear predictor as X %*% beta, so the derivative is
+# (X(t + eps) - X(t)) / eps %*% beta, and its variance is Xd V Xd'.
+trend_derivative <- function(model, data, eps = 1e-4, n = 400) {
+  newd <- tibble(
+    t_years   = seq(min(data$t_years), max(data$t_years), length.out = n),
+    month_num = 1     # irrelevant: the seasonal term does not depend on t_years
+  )
+  X0 <- predict(model, newd, type = "lpmatrix")
+  X1 <- predict(model, mutate(newd, t_years = t_years + eps), type = "lpmatrix")
+  Xd <- (X1 - X0) / eps
+  d  <- as.numeric(Xd %*% coef(model))
+  se <- sqrt(rowSums((Xd %*% vcov(model)) * Xd))
+  newd |>
+    mutate(
+      date        = date_decimal(t_years + 2014) |> as.Date(),
+      deriv       = d,
+      lo          = d - 1.96 * se,
+      hi          = d + 1.96 * se,
+      pct_per_yr  = 100 * (exp(d) - 1),
+      pct_lo      = 100 * (exp(lo) - 1),
+      pct_hi      = 100 * (exp(hi) - 1),
+      direction   = case_when(lo > 0 ~ "Increasing", hi < 0 ~ "Decreasing", TRUE ~ "No sig. change")
+    )
+}
+
+gam_derivs <- imap(gam_results, function(r, term) {
+  trend_derivative(r$m_cc, r$data) |>
+    mutate(search_term = term, term_label = factor(term_labels[term], levels = levels(term_info$term_label)))
+}) |>
+  list_rbind()
+
+# Summarise periods of significant increase as date ranges for each term
+increase_periods <- gam_derivs |>
+  group_by(term_label) |>
+  mutate(run_id = consecutive_id(direction)) |>
+  filter(direction == "Increasing") |>
+  group_by(term_label, run_id) |>
+  summarise(start = min(date), end = max(date),
+            peak_growth = max(pct_per_yr), .groups = "drop") |>
+  filter(as.numeric(end - start) > 60) |>   # ignore runs shorter than ~2 months
+  mutate(period = paste(format(start, "%b %Y"), "–", format(end, "%b %Y"))) |>
+  group_by(term_label) |>
+  summarise(periods = paste(period, collapse = "; "),
+            max_growth_pct_per_yr = max(peak_growth), .groups = "drop")
+
+knitr::kable(increase_periods,
+             col.names = c("Search term", "Periods of significant increase",
+                           "Maximum growth rate (% per year)"),
+             digits = 0,
+             caption = "Periods during which the GAM trend was increasing significantly (95% pointwise CI above 0)")
+```
+
+```{r}
+#| label: fig-derivatives
+#| fig-cap: "Rate of change of the GAM trend (% change per year) with pointwise 95% CI. Red segments = significant increase; blue = significant decrease. Y-axis is clipped at -100% to 400% for readability."
+#| fig-height: 10
+
+p_deriv <- ggplot(gam_derivs, aes(x = date)) +
+  geom_hline(yintercept = 0, colour = "grey40") +
+  geom_ribbon(aes(ymin = pct_lo, ymax = pct_hi), fill = "grey70", alpha = 0.5) +
+  geom_line(aes(y = pct_per_yr), colour = "grey30") +
+  geom_point(data = filter(gam_derivs, direction != "No sig. change"),
+             aes(y = pct_per_yr, colour = direction), size = 0.6) +
+  scale_colour_manual(values = c("Increasing" = "#b2182b", "Decreasing" = "#2166ac")) +
+  facet_wrap(~ term_label, ncol = 2) +
+  coord_cartesian(ylim = c(-100, 400)) +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  labs(x = NULL, y = "Trend growth rate (% per year)", colour = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+p_deriv
+save_fig(p_deriv, "fig8_gam_trend_derivatives.png", width = 28, height = 25)
+```
+
+## Joinpoint (segmented) regression and annual percent change
+
+Joinpoint regression fits straight-line segments on the log scale joined at an estimated
+breakpoint, giving an annual percent change (APC) for each segment and an average annual percent
+change (AAPC) over the whole period. Unlike the old analysis (which used 12 annual means), this is
+fitted to all 145 monthly values with harmonic terms for seasonality:
+
+$$\log(E[\text{RSV}_t]) = \beta_0 + \beta_1 t + \delta (t - \psi)_+ + \text{harmonics}$$
+
+where $\psi$ is the breakpoint and $(t-\psi)_+$ is 0 before the breakpoint. The Davies test
+checks whether a breakpoint is needed at all. Standard errors assume independent residuals, so
+CIs are likely somewhat too narrow given residual autocorrelation.
+
+```{r}
+#| label: segmented-analysis
+
+fit_joinpoint <- function(term_data) {
+  base_glm <- glm(mean_rsv ~ t_years + sin1 + cos1 + sin2 + cos2,
+                  family = quasipoisson(), data = term_data)
+  # Davies test: H0 = no change in slope
+  davies_p <- tryCatch(davies.test(base_glm, seg.Z = ~ t_years)$p.value,
+                       error = function(e) NA_real_)
+  seg_fit <- tryCatch(
+    segmented(base_glm, seg.Z = ~ t_years, npsi = 1),
+    error = function(e) NULL
+  )
+  # Fall back to the single-slope model if segmented() fails, finds no breakpoint,
+  # or the Davies test gives no evidence (p >= 0.05) that a breakpoint is needed
+  if (is.null(seg_fit) || is.null(seg_fit$psi) || is.na(davies_p) || davies_p >= 0.05) {
+    ci <- confint.default(base_glm)["t_years", ]
+    return(list(model = base_glm, segmented = FALSE, davies_p = davies_p,
+                tab = tibble(segment = "Whole period", est = coef(base_glm)["t_years"],
+                             lo = ci[1], hi = ci[2]),
+                breakpoint = NA_real_, bp_lo = NA_real_, bp_hi = NA_real_,
+                aapc = coef(base_glm)["t_years"], aapc_lo = ci[1], aapc_hi = ci[2]))
+  }
+  sl  <- slope(seg_fit, conf.level = 0.95)$t_years
+  bp  <- confint(seg_fit)            # breakpoint estimate and CI (in t_years)
+  # AAPC over the full period: segmented::aapc() returns the length-weighted average slope
+  aa  <- tryCatch(aapc(seg_fit, parm = "t_years"), error = function(e) NULL)
+  list(
+    model = seg_fit, segmented = TRUE, davies_p = davies_p,
+    tab = tibble(segment = c("Before breakpoint", "After breakpoint"),
+                 est = sl[, 1], lo = sl[, 4], hi = sl[, 5]),
+    breakpoint = bp[1, 1], bp_lo = bp[1, 2], bp_hi = bp[1, 3],
+    aapc = if (!is.null(aa)) aa[1] else NA_real_,
+    aapc_lo = if (!is.null(aa)) aa[3] else NA_real_,
+    aapc_hi = if (!is.null(aa)) aa[4] else NA_real_
+  )
+}
+
+jp_results <- map(gam_results, ~ fit_joinpoint(.x$data))
+
+# Convert a log-scale slope (per year) to an annual percent change
+to_apc <- function(b) 100 * (exp(b) - 1)
+# Convert decimal years since 2014 to a "Mon YYYY" label
+t_to_label <- function(t) if_else(is.na(t), NA_character_,
+                                  format(as.Date(date_decimal(t + 2014)), "%b %Y"))
+
+jp_table <- imap(jp_results, function(r, term) {
+  seg_rows <- r$tab |> mutate(apc = sprintf("%.1f (%.1f to %.1f)", to_apc(est), to_apc(lo), to_apc(hi)))
+  # Months of data after the breakpoint (to the end of the series, Feb 2026 = t of 12.08)
+  max_t        <- max(gam_results[[term]]$data$t_years)
+  months_after <- if (r$segmented) round((max_t - r$breakpoint) * 12) else NA_real_
+  tibble(
+    term_label  = term_labels[term],
+    davies_p    = r$davies_p,
+    breakpoint  = if (r$segmented) sprintf("%s (%s – %s)", t_to_label(r$breakpoint),
+                                           t_to_label(r$bp_lo), t_to_label(r$bp_hi)) else "None (single slope)",
+    apc_before  = seg_rows$apc[1],
+    # Flag post-breakpoint segments too short (< 24 months) for a stable growth estimate
+    apc_after   = if (nrow(seg_rows) > 1) {
+      paste0(seg_rows$apc[2], if (months_after < 24) paste0(" †(", months_after, " mo)") else "")
+    } else NA_character_,
+    aapc        = sprintf("%.1f (%.1f to %.1f)", to_apc(r$aapc), to_apc(r$aapc_lo), to_apc(r$aapc_hi))
+  )
+}) |>
+  list_rbind()
+
+knitr::kable(
+  jp_table,
+  col.names = c("Search term", "Davies test p", "Breakpoint (95% CI)",
+                "APC before (or whole period), % (95% CI)", "APC after, % (95% CI)",
+                "AAPC Feb 2014–Feb 2026, % (95% CI)"),
+  digits = 4,
+  caption = "Segmented quasi-Poisson regression on monthly RSV (seasonally adjusted with harmonic terms). † = post-breakpoint segment shorter than 24 months; its APC is driven by a few end-of-series spikes and should not be interpreted as a sustained growth rate."
+)
+```
+
+::: {.callout-note}
+Very large APCs for low-volume terms (e.g. alpha-gal before 2020, when most months were zero)
+describe proportional growth from a near-zero baseline. They are better read as "interest went
+from almost none to substantial" than as a precise growth rate.
+:::
+
+```{r}
+#| label: fig-joinpoint
+#| fig-cap: "Segmented regression fits (red) for each term, with the estimated breakpoint (dashed line) and its 95% CI (shaded). Grey points = observed monthly mean RSV. The fitted line includes the seasonal harmonics."
+#| fig-height: 10
+
+jp_pred <- imap(jp_results, function(r, term) {
+  gam_results[[term]]$data |>
+    mutate(jp_fit = predict(r$model, type = "response"))
+}) |> list_rbind()
+
+jp_bps <- imap(jp_results, function(r, term) {
+  tibble(term_label = factor(term_labels[term], levels = levels(term_info$term_label)),
+         bp = as.Date(date_decimal(r$breakpoint + 2014)),
+         bp_lo = as.Date(date_decimal(r$bp_lo + 2014)),
+         bp_hi = as.Date(date_decimal(r$bp_hi + 2014)))
+}) |> list_rbind() |> filter(!is.na(bp))
+
+p_jp <- ggplot(jp_pred, aes(x = date)) +
+  geom_rect(data = jp_bps, inherit.aes = FALSE,
+            aes(xmin = bp_lo, xmax = bp_hi, ymin = -Inf, ymax = Inf), fill = "#fdae61", alpha = 0.3) +
+  geom_vline(data = jp_bps, aes(xintercept = bp), linetype = "dashed") +
+  geom_point(aes(y = mean_rsv), colour = "grey50", size = 0.6) +
+  geom_line(aes(y = jp_fit), colour = "#b2182b", linewidth = 0.6) +
+  facet_wrap(~ term_label, scales = "free_y", ncol = 2) +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  labs(x = NULL, y = "RSV") +
+  theme_bw()
+
+p_jp
+save_fig(p_jp, "fig9_joinpoint.png", width = 28, height = 25)
+```
+
+# Media–search association
+
+These analyses use the months where both data sources are available (Feb 2014 – Feb 2026).
+
+```{r}
+#| label: correlation-data
+
+# Wide table: one column per search term plus the monthly media counts
+correlation_data <- trends_avg |>
+  select(date, search_term, mean_rsv) |>
+  pivot_wider(names_from = search_term, values_from = mean_rsv) |>
+  left_join(media_monthly |> select(date, articles, stories), by = "date") |>
+  arrange(date)
+```
+
+## Spearman correlations
+
+Raw-level correlations can be inflated simply because both series trend upwards over time. We
+therefore also correlate the first-differenced series (month-to-month changes), which removes
+shared trends.
+
+```{r}
+#| label: spearman
+
+spearman_results <- map(search_terms, function(term) {
+  x <- correlation_data[[term]]
+  y <- correlation_data$articles
+  raw  <- cor.test(x, y, method = "spearman", exact = FALSE)
+  dif  <- cor.test(diff(x), diff(y), method = "spearman", exact = FALSE)
+  tibble(term_label = term_labels[term],
+         rho_raw = raw$estimate, p_raw = raw$p.value,
+         rho_diff = dif$estimate, p_diff = dif$p.value)
+}) |>
+  list_rbind() |>
+  mutate(p_raw_bh = p.adjust(p_raw, "BH"), p_diff_bh = p.adjust(p_diff, "BH"))
+
+knitr::kable(
+  spearman_results |> select(term_label, rho_raw, p_raw_bh, rho_diff, p_diff_bh),
+  col.names = c("Search term", "rho (levels)", "p (BH)", "rho (differenced)", "p (BH)"),
+  digits = c(0, 3, 4, 3, 4),
+  caption = "Spearman correlations between monthly relevant media articles and search RSV"
+)
+```
+
+## Cross-correlation (lead–lag)
+
+::: {.callout-warning}
+## Correction to the previous analysis
+In R, `ccf(x, y)` at lag *k* estimates cor(x[t+k], y[t]). The old analysis called
+`ccf(media, search)` and interpreted positive lags as "media leads search", but with that
+argument order a positive lag actually means **search leads media**. Here we call
+`ccf(search, media)`, so a **positive lag means media leads search** (media at month *t* is
+correlated with search at month *t + k*).
+:::
+
+Both series are first-differenced to remove trend before computing the CCF.
+
+```{r}
+#| label: fig-ccf
+#| fig-cap: "Cross-correlation between month-to-month changes in media articles and search RSV. Positive lag = media leads search. Dashed lines = approximate 95% bounds; red bars exceed these bounds."
+#| fig-height: 8
+
+ccf_terms <- c("alpha_gal", "mammalian_meat_allergy", "meat_allergy", "tick_allergy",
+               "paralysis_tick", "food_allergy")
+
+ccf_df <- map(ccf_terms, function(term) {
+  search_diff <- diff(correlation_data[[term]])
+  media_diff  <- diff(correlation_data$articles)
+  cc <- ccf(search_diff, media_diff, lag.max = 6, plot = FALSE)
+  tibble(term_label = factor(term_labels[term], levels = levels(term_info$term_label)),
+         lag = as.numeric(cc$lag), ccf = as.numeric(cc$acf),
+         bound = qnorm(0.975) / sqrt(length(search_diff)))
+}) |> list_rbind()
+
+p_ccf <- ggplot(ccf_df, aes(x = lag, y = ccf)) +
+  geom_hline(yintercept = 0, colour = "grey40") +
+  geom_hline(aes(yintercept = bound), linetype = "dashed", colour = "#2166ac") +
+  geom_hline(aes(yintercept = -bound), linetype = "dashed", colour = "#2166ac") +
+  geom_col(aes(fill = abs(ccf) > bound), width = 0.6, show.legend = FALSE) +
+  scale_fill_manual(values = c(`TRUE` = "#b2182b", `FALSE` = "grey60")) +
+  scale_x_continuous(breaks = -6:6) +
+  facet_wrap(~ term_label, ncol = 2) +
+  labs(x = "Lag (months; positive = media leads search)", y = "Cross-correlation") +
+  theme_bw()
+
+p_ccf
+save_fig(p_ccf, "fig10_ccf.png", width = 28, height = 20)
+
+# The lag with the largest absolute correlation for each term
+ccf_df |>
+  group_by(term_label) |>
+  slice_max(abs(ccf), n = 1) |>
+  ungroup() |>
+  mutate(interpretation = case_when(
+    abs(ccf) <= bound ~ "No lag exceeds 95% bound",
+    lag == 0 ~ "Same month",
+    lag > 0  ~ paste("Media leads search by", lag, "month(s)"),
+    TRUE     ~ paste("Search leads media by", abs(lag), "month(s)")
+  )) |>
+  select(term_label, lag, ccf, interpretation) |>
+  knitr::kable(col.names = c("Search term", "Lag of max |CCF|", "CCF", "Interpretation"),
+               digits = 3, caption = "Lag with the strongest cross-correlation")
+```
+
+## Media effect after accounting for trend and seasonality
+
+Correlations do not separate a media effect from the long-term trend. Here the media count is
+added to each term's GAM (trend + cyclic season), so its coefficient estimates how much higher
+search interest is in months with more media coverage *relative to what the trend and season
+would predict*. Media exposure is entered as $\log_2(1 + \text{articles})$, so the IRR is the
+multiplicative change in RSV per doubling of (articles + 1). The previous month's coverage
+(lag 1) is included to capture delayed effects.
+
+```{r}
+#| label: media-gam
+
+media_gam_results <- map(search_terms, function(term) {
+  d <- gam_results[[term]]$data |>
+    left_join(media_monthly |> select(date, articles), by = "date") |>
+    mutate(media0 = log2(1 + articles),
+           media1 = lag(media0))         # previous month's coverage
+  m <- gam(mean_rsv ~ s(t_years, bs = "cr", k = 20) + s(month_num, bs = "cc", k = 8) +
+             media0 + media1,
+           knots = list(month_num = c(0.5, 12.5)),
+           family = quasipoisson(), method = "REML", data = d)
+  pt <- summary(m)$p.table
+  map(c("media0", "media1"), function(v) {
+    tibble(term_label = term_labels[term],
+           lag = if_else(v == "media0", "Same month", "Previous month"),
+           irr = exp(pt[v, "Estimate"]),
+           lo  = exp(pt[v, "Estimate"] - 1.96 * pt[v, "Std. Error"]),
+           hi  = exp(pt[v, "Estimate"] + 1.96 * pt[v, "Std. Error"]),
+           p   = pt[v, "Pr(>|t|)"])
+  }) |> list_rbind()
+}) |>
+  list_rbind() |>
+  mutate(p_bh = p.adjust(p, "BH"))
+
+knitr::kable(
+  media_gam_results |>
+    mutate(irr_ci = sprintf("%.2f (%.2f–%.2f)", irr, lo, hi)) |>
+    select(term_label, lag, irr_ci, p, p_bh),
+  col.names = c("Search term", "Media timing", "IRR per doubling (95% CI)", "p", "p (BH)"),
+  digits = 4,
+  caption = "Association between media coverage and search RSV, adjusted for trend and seasonality (quasi-Poisson GAM)"
+)
+```
+
+```{r}
+#| label: fig-media-gam
+#| fig-cap: "Incidence rate ratios (95% CI) for search RSV per doubling of (relevant media articles + 1), adjusted for long-term trend and seasonality. IRR > 1 = more searching in months with more coverage."
+#| fig-height: 5
+
+p_media_gam <- media_gam_results |>
+  mutate(term_label = factor(term_label, levels = rev(levels(term_info$term_label)))) |>
+  ggplot(aes(x = irr, y = term_label, colour = lag)) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_pointrange(aes(xmin = lo, xmax = hi), position = position_dodge(width = 0.5)) +
+  scale_x_log10() +
+  scale_colour_manual(values = c("Same month" = "#b2182b", "Previous month" = "#2166ac")) +
+  labs(x = "IRR per doubling of (articles + 1), log scale", y = NULL, colour = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+p_media_gam
+save_fig(p_media_gam, "fig11_media_gam_irr.png", height = 13)
+```
+
+## Granger causality
+
+Granger causality tests whether past values of one series improve prediction of another beyond
+its own past. It requires stationary series, assessed with the ADF (H0: unit root) and KPSS
+(H0: stationary) tests; series that are not clearly stationary are first-differenced. The media
+series is mostly zeros, which limits the power of this test.
+
+```{r}
+#| label: stationarity
+
+granger_terms <- c("alpha_gal", "mammalian_meat_allergy", "meat_allergy", "tick_allergy")
+all_series    <- c(granger_terms, "articles")
+
+stationarity_results <- map(all_series, function(s) {
+  x    <- correlation_data[[s]]
+  adf  <- suppressWarnings(adf.test(x, alternative = "stationary"))
+  kpss <- suppressWarnings(kpss.test(x, null = "Level"))
+  tibble(series_id = s,
+         series = if_else(s == "articles", "Media articles", term_labels[s]),
+         adf_p = adf$p.value, kpss_p = kpss$p.value,
+         conclusion = case_when(
+           adf$p.value < 0.05 & kpss$p.value >= 0.05 ~ "Stationary",
+           adf$p.value >= 0.05 & kpss$p.value < 0.05 ~ "Non-stationary",
+           TRUE ~ "Inconclusive"))
+}) |> list_rbind()
+
+knitr::kable(stationarity_results |> select(-series_id),
+             col.names = c("Series", "ADF p", "KPSS p", "Conclusion"), digits = 4,
+             caption = "Stationarity tests (p-values from tseries are truncated at 0.01 and 0.1)")
+
+# Series that are not clearly stationary get differenced
+needs_differencing <- stationarity_results |> filter(conclusion != "Stationary") |> pull(series_id)
+```
+
+```{r}
+#| label: granger
+
+granger_results <- map(granger_terms, function(term) {
+  s <- correlation_data[[term]]
+  m <- correlation_data$articles
+  if (term %in% needs_differencing) s <- diff(s)
+  if ("articles" %in% needs_differencing) m <- diff(m)
+  # If only one series was differenced, drop the first value of the other so they align
+  n <- min(length(s), length(m))
+  var_data <- cbind(search = tail(s, n), media = tail(m, n))
+
+  # Choose the VAR lag order by AIC, bounded between 1 and 4 months
+  p <- VARselect(var_data, lag.max = 6, type = "const")$selection[["AIC(n)"]]
+  p <- min(max(p, 1), 4)
+  v <- VAR(var_data, p = p, type = "const")
+
+  tibble(term_label = term_labels[term], var_lag = p,
+         differenced = paste(c(if (term %in% needs_differencing) "search",
+                               if ("articles" %in% needs_differencing) "media"), collapse = " + ") |>
+           na_if(""),
+         media_to_search_p = causality(v, cause = "media")$Granger$p.value[1, 1],
+         search_to_media_p = causality(v, cause = "search")$Granger$p.value[1, 1])
+}) |>
+  list_rbind() |>
+  mutate(media_to_search_bh = p.adjust(media_to_search_p, "BH"),
+         search_to_media_bh = p.adjust(search_to_media_p, "BH"))
+
+knitr::kable(
+  granger_results |> mutate(differenced = replace_na(differenced, "none")),
+  col.names = c("Search term", "VAR lag", "Differenced", "Media → search p", "Search → media p",
+                "Media → search p (BH)", "Search → media p (BH)"),
+  digits = 4,
+  caption = "Granger causality tests (bidirectional)"
+)
+```
+
+# Media events
+
+## Interrupted time series: August 2023 media cluster
+
+The August 2023 cluster (ABC, SBS, News Corp regional papers; "ticks thriving after three wet
+summers", "450,000 US cases") is far enough from the end of the series (31 post-event months)
+for a segmented ITS model:
+
+$$\log(E[\text{RSV}_t]) = \beta_0 + \beta_1 \text{time}_t + \beta_2 \text{post}_t + \beta_3 \text{time since event}_t + \text{harmonics}$$
+
+* $e^{\beta_2}$ = immediate **level change** (IRR) at the event.
+* $e^{12\beta_3}$ = change in the **annual growth rate** after the event.
+
+Standard errors are Newey–West (HAC, lag 3) to allow for residual autocorrelation. The analysis
+is run for the three AGS/MMA terms with the most data.
+
+```{r}
+#| label: its-function
+
+fit_its <- function(term, event_date) {
+  d <- gam_results[[term]]$data |>
+    mutate(
+      time       = row_number(),
+      post       = as.integer(date >= event_date),
+      time_after = if_else(post == 1, time - min(time[post == 1]) + 1, 0)
+    )
+  m  <- glm(mean_rsv ~ time + post + time_after + sin1 + cos1 + sin2 + cos2,
+            family = quasipoisson(), data = d)
+  dw <- dwtest(m)
+  ct <- coeftest(m, vcov. = NeweyWest(m, lag = 3, prewhite = FALSE))
+  est <- function(p, mult = 1) {
+    b <- ct[p, "Estimate"] * mult; se <- ct[p, "Std. Error"] * mult
+    c(est = exp(b), lo = exp(b - 1.96 * se), hi = exp(b + 1.96 * se), p = ct[p, 4])
+  }
+  lvl <- est("post"); slp <- est("time_after", 12); pre <- est("time", 12)
+  # Counterfactual: the pre-event trend continued with no level or slope change
+  d <- d |> mutate(fitted = fitted(m),
+                   counterfactual = predict(m, newdata = mutate(d, post = 0, time_after = 0),
+                                            type = "response"))
+  list(
+    data = d,
+    table = tibble(
+      term_label = term_labels[term],
+      pre_growth = sprintf("%.1f%% (%.1f to %.1f)", 100 * (pre["est"] - 1), 100 * (pre["lo"] - 1), 100 * (pre["hi"] - 1)),
+      level_irr  = sprintf("%.2f (%.2f–%.2f)", lvl["est"], lvl["lo"], lvl["hi"]),
+      level_p    = lvl["p"],
+      slope_irr  = sprintf("%.2f (%.2f–%.2f)", slp["est"], slp["lo"], slp["hi"]),
+      slope_p    = slp["p"],
+      dw         = dw$statistic,
+      n_post     = sum(d$post)
+    )
+  )
+}
+```
+
+```{r}
+#| label: its-aug2023
+
+its_terms <- c("alpha_gal", "mammalian_meat_allergy", "meat_allergy")
+its_2023  <- map(its_terms, ~ fit_its(.x, as.Date("2023-08-01"))) |> set_names(its_terms)
+
+knitr::kable(
+  map(its_2023, "table") |> list_rbind(),
+  col.names = c("Search term", "Pre-event growth per year (95% CI)", "Level change IRR (95% CI)",
+                "p", "Change in annual growth, ratio (95% CI)", "p", "Durbin–Watson", "Post-event months"),
+  digits = 4,
+  caption = "Interrupted time series: August 2023 media cluster (Newey–West SEs)"
+)
+```
+
+```{r}
+#| label: fig-its-aug2023
+#| fig-cap: "Interrupted time series for the August 2023 media cluster. Grey = observed RSV; red = ITS model fit; dashed = counterfactual (pre-event trend continued). Fits include seasonal harmonics."
+#| fig-height: 8
+
+p_its <- map(its_2023, "data") |>
+  list_rbind() |>
+  ggplot(aes(x = date)) +
+  geom_vline(xintercept = as.Date("2023-08-01"), linetype = "dashed", colour = "#b2182b") +
+  geom_point(aes(y = mean_rsv), colour = "grey50", size = 0.7) +
+  geom_line(aes(y = counterfactual), colour = "#b2182b", linetype = "dashed",
+            data = \(x) filter(x, post == 1)) +
+  geom_line(aes(y = fitted), colour = "#b2182b", linewidth = 0.7) +
+  facet_wrap(~ term_label, scales = "free_y", ncol = 1) +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  labs(x = NULL, y = "RSV") +
+  theme_bw()
+
+p_its
+save_fig(p_its, "fig12_its_aug2023.png", height = 20)
+```
+
+## Excess search interest: Nov 2025 – Feb 2026
+
+The death of a NSW teenager (Nov 2025), the inquest, and the coroner's 26 Feb 2026 finding that
+he died of MMA are the largest media events in the data. With only 4 months of post-event
+search data, an ITS model is not reliable (Bernal et al. 2017 recommend at least 8–12 post-event
+points). Instead we ask a simpler question: **was search interest in each of these months higher
+than expected from the pre-event trend?**
+
+1. Fit a log-linear quasi-Poisson model (trend + harmonics) to Jan 2019 – Oct 2025, the recent
+   pre-event period with consistently non-zero data for most terms.
+2. Forecast Nov 2025 – Feb 2026 and build a 95% prediction interval by simulation (drawing
+   coefficients from their sampling distribution, then drawing observations with
+   variance = dispersion × mean via a gamma distribution).
+3. Compare observed RSV with the forecast.
+
+```{r}
+#| label: excess-function
+
+excess_interest <- function(term, event_date = as.Date("2025-11-01"),
+                            pre_start = as.Date("2019-01-01"), n_sim = 10000) {
+  d    <- gam_results[[term]]$data
+  pre  <- d |> filter(date >= pre_start, date < event_date)
+  post <- d |> filter(date >= event_date)
+
+  m   <- glm(mean_rsv ~ t_years + sin1 + cos1 + sin2 + cos2, family = quasipoisson(), data = pre)
+  phi <- summary(m)$dispersion
+
+  # Simulate coefficient vectors from their approximate multivariate normal distribution
+  betas <- MASS::mvrnorm(n_sim, coef(m), vcov(m))
+  Xpost <- model.matrix(delete.response(terms(m)), post)
+  mu    <- exp(Xpost %*% t(betas))           # rows = post months, cols = simulations
+
+  # Add observation noise: gamma with mean mu and variance phi * mu
+  sims  <- matrix(rgamma(length(mu), shape = mu / phi, scale = phi), nrow = nrow(mu))
+
+  post |>
+    transmute(
+      search_term = term, term_label, date, observed = mean_rsv,
+      expected = rowMeans(mu),
+      pi_lo    = apply(sims, 1, quantile, 0.025),
+      pi_hi    = apply(sims, 1, quantile, 0.975),
+      ratio    = observed / expected,
+      # one-sided "p-value": share of simulated values at least as large as observed
+      p_upper  = rowMeans(sims >= observed),
+      exceeds  = observed > pi_hi
+    ) |>
+    # also return the pre-period fit for plotting
+    bind_rows(pre |> transmute(search_term = term, term_label, date, observed = mean_rsv,
+                               expected = fitted(m)))
+}
+
+excess_terms <- c("alpha_gal", "mammalian_meat_allergy", "meat_allergy", "tick_allergy",
+                  "paralysis_tick", "food_allergy")
+excess_results <- map(excess_terms, excess_interest) |> list_rbind()
+```
+
+```{r}
+#| label: excess-table
+
+excess_results |>
+  filter(date >= as.Date("2025-11-01")) |>
+  mutate(month = format(date, "%b %Y"),
+         interval = sprintf("%.1f (%.1f–%.1f)", expected, pi_lo, pi_hi)) |>
+  select(term_label, month, observed, interval, ratio, p_upper, exceeds) |>
+  knitr::kable(col.names = c("Search term", "Month", "Observed RSV", "Expected RSV (95% PI)",
+                             "Observed / expected", "P(sim ≥ observed)", "Above 95% PI"),
+               digits = 3,
+               caption = "Observed vs expected search interest after the Nov 2025 media events")
+```
+
+```{r}
+#| label: fig-excess
+#| fig-cap: "Observed RSV (points) vs the pre-event model (line, Jan 2019 – Oct 2025) and its forecast with 95% prediction interval (ribbon) for Nov 2025 – Feb 2026. Red points fall above the prediction interval."
+#| fig-height: 8
+
+p_excess <- excess_results |>
+  mutate(term_label = factor(term_label, levels = levels(term_info$term_label))) |>
+  ggplot(aes(x = date)) +
+  geom_vline(xintercept = as.Date("2025-11-01"), linetype = "dashed", colour = "grey40") +
+  geom_ribbon(aes(ymin = pi_lo, ymax = pi_hi), fill = "#2166ac", alpha = 0.2, na.rm = TRUE) +
+  geom_line(aes(y = expected), colour = "#2166ac") +
+  geom_point(aes(y = observed, colour = coalesce(exceeds, FALSE)), size = 1) +
+  scale_colour_manual(values = c(`TRUE` = "#b2182b", `FALSE` = "grey40"), guide = "none") +
+  facet_wrap(~ term_label, scales = "free_y", ncol = 2) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  labs(x = NULL, y = "RSV") +
+  theme_bw()
+
+p_excess
+save_fig(p_excess, "fig13_excess_interest_2025_2026.png", width = 28, height = 20)
+```
+
+# Summary of findings
+
+```{r}
+#| label: summary-values
+#| code-summary: "Show code (extracts numbers quoted in the summary text)"
+
+# Small helpers to pull values out of the results tables for the inline text below
+ts_row  <- function(term) term_summary |> filter(term_label == term_labels[term])
+gam_row <- function(term) gam_summary |> filter(search_term == term)
+irr_txt <- function(term, timing = "Same month") {
+  r <- media_gam_results |> filter(term_label == term_labels[term], lag == timing)
+  sprintf("IRR %.2f, 95%% CI %.2f–%.2f", r$irr, r$lo, r$hi)
+}
+tick_txt <- function(term) {
+  r <- gam_row(term)
+  sprintf("IRR %.2f, 95%% CI %.2f–%.2f", r$tick_irr, r$tick_irr_lo, r$tick_irr_hi)
+}
+excess_val <- function(term, month, col) {
+  excess_results |> filter(search_term == term, date == as.Date(month)) |> pull({{ col }})
+}
+jp_row <- function(term) jp_table |> filter(term_label == term_labels[term])
+cv_row <- function(term) cv_summary |> filter(search_term == term)
+```
+
+**1. Australian search interest in alpha-gal has grown substantially.**
+Searches for "alpha gal" were essentially absent before late 2016 (first sustained interest:
+`r format(ts_row("alpha_gal")$first_sustained, "%b %Y")`). Mean RSV in 2021–25 was
+`r round(ts_row("alpha_gal")$fold_change)`-fold higher than in 2015–19. The GAM trend rose
+significantly over `r increase_periods |> filter(term_label == "Alpha-gal") |> pull(periods)`, and the
+seasonally adjusted average annual percent change over the whole period was
+`r jp_row("alpha_gal")$aapc` % per year (`r if (jp_row("alpha_gal")$breakpoint == "None (single slope)") "no evidence of a change in growth rate; Davies test" else "Davies test"`
+p = `r signif(jp_row("alpha_gal")$davies_p, 2)`). The search series peaked in
+`r format(ts_row("alpha_gal")$peak_month, "%b %Y")`. Growth started from a near-zero baseline, so
+the percentage figures mainly show that interest went from almost none to substantial.
+
+**2. The Australian clinical term "mammalian meat allergy" behaves differently.** Its long-term
+level changed little (2021–25 vs 2015–19 fold change =
+`r round(ts_row("mammalian_meat_allergy")$fold_change, 2)`), and most of its variation is spikes
+around news events. It is also a low-volume term with high sampling noise (median CV
+`r round(cv_row("mammalian_meat_allergy")$median_cv)`%), so its month-to-month values are
+imprecise. The broad lay terms "meat allergy" and "tick allergy" were fairly flat until a marked
+acceleration in 2025–26. Because terms were queried separately, these data cannot show whether
+"alpha-gal" has overtaken "mammalian meat allergy" in absolute use.
+
+**3. Tick searches are seasonal; AGS/MMA searches are not.** "Paralysis tick"
+(`r tick_txt("paralysis_tick")`) and "ticks" (`r tick_txt("ticks")`) were significantly higher in
+the Oct–Mar tick season, after accounting for trend. "Alpha-gal" showed no tick-season effect
+(`r tick_txt("alpha_gal")`), nor did "mammalian meat allergy" (`r tick_txt("mammalian_meat_allergy")`).
+This fits the biology: sensitisation is delayed and symptoms are not tied to the bite season.
+Information-seeking about AGS/MMA therefore looks driven by diagnosis and media rather than by
+seasonal tick exposure.
+
+**4. Media coverage is strongly linked to searches for Australian/lay terms, less so for "alpha-gal".**
+After adjusting for trend and season, each doubling of monthly news articles was associated with
+higher same-month RSV for "mammalian meat allergy" (`r irr_txt("mammalian_meat_allergy")`),
+"meat allergy" (`r irr_txt("meat_allergy")`), and "tick allergy" (`r irr_txt("tick_allergy")`).
+The association for "alpha-gal" was much weaker (`r irr_txt("alpha_gal")`), and the control terms
+showed none ("food allergy": `r irr_txt("food_allergy")`). Cross-correlations peaked at lag 0
+(same month). Granger tests found no significant predictive relationship in either direction after
+BH correction, but monthly data and a sparse media series (most months have 0 articles) give that
+test little power to detect within-month effects.
+
+This suggests two partly separate audiences. Steady, growing "alpha-gal" searching (probably
+people with a diagnosis or symptoms, plus exposure to international content) contrasts with
+event-driven searching for the terms used in Australian news.
+
+**5. Media events.**
+
+* *Aug 2023 cluster*: no detectable level or slope change in any term (ITS level-change IRRs
+  `r paste(map_chr(its_2023, ~ paste0(.x$table$term_label, " ", .x$table$level_irr)), collapse = "; ")`).
+* *Nov 2025 – Feb 2026 (teen death, inquest, coroner's finding)*: the clearest awareness signal in
+  the data. In Feb 2026, RSV for "mammalian meat allergy" was
+  `r round(excess_val("mammalian_meat_allergy", "2026-02-01", ratio), 1)`× the pre-event forecast,
+  "meat allergy" `r round(excess_val("meat_allergy", "2026-02-01", ratio), 1)`×, and "tick allergy"
+  `r round(excess_val("tick_allergy", "2026-02-01", ratio), 1)`×, all above the 95% prediction
+  interval. Nov 2025 was also above the interval for "mammalian meat allergy" and "meat allergy".
+  "Alpha-gal" was elevated (Feb 2026: `r round(excess_val("alpha_gal", "2026-02-01", ratio), 2)`×
+  forecast) but within its prediction interval, because its pre-event trend was already steep.
+  The control terms "paralysis tick" and "food allergy" were not elevated, so the excess is
+  specific to AGS/MMA.
+
+**6. Data reliability.** High-volume terms are highly reproducible across downloads (median CV
+< 5% for food allergy, paralysis tick, and ticks). "Alpha-gal" is moderately reliable overall and
+good since 2020 (median CV `r round(cv_row("alpha_gal")$median_cv_2020on)`%). "Alpha-gal syndrome"
+(`r round(cv_row("alpha-gal_syndrome")$pct_zero_months)`% of months all-zero) and "mammalian meat
+allergy" are low-reliability and should be treated as indicative only. The shapes of the series
+were reproduced closely between the Feb–Mar 2026 and Jul–Oct 2026 downloads, but levels shifted
+when the RSV = 100 anchor month changed.
+
+# Limitations and recommendations for data collection
+
+**Limitations**
+
+* **Relative, independently scaled data.** RSV is a proportion of all Google searches, scaled so
+  that each term's busiest month = 100. It does not give absolute search counts, and levels are not
+  comparable between separately queried terms.
+* **Search window ends Feb 2026.** The downloader's time range is fixed at
+  `2014-02-01 2026-02-01`, so the May 2026 media wave and any sustained post-coroner change in
+  awareness are not captured.
+* **Category = All (0), not Health (45).** This captures more volume but more non-health noise
+  (e.g. "ticks" includes non-medical uses).
+* **Ecological design.** Associations between media and search are population-level. They do not
+  show that the people reading the news are the people searching, and they do not establish
+  causation.
+* **Media data.** MediaCloud covers online news only (no TV, radio, or social media). Its
+  Australian collection changes in size over time, and the off-topic filter is title-based.
+* **Autocorrelation.** Residual autocorrelation is modest (lag-1 ≤
+  `r round(max(gam_summary$resid_acf1), 2)`) but means GAM and joinpoint p-values are somewhat
+  optimistic. The ITS models use Newey–West SEs.
+* **Short post-event windows.** Only 4 post-event months are available for the Nov 2025 events, so
+  they are assessed as excess over a forecast rather than with a full ITS model.
+
+**Recommendations for the next data pull**
+
+1. **Extend the time range** (e.g. `2014-02-01 2026-09-30`) so post-coroner months and the May 2026
+   media wave are included. All terms must be re-downloaded together, because extending the range
+   changes the normalisation.
+2. **Co-query the key terms in one payload** (e.g. `["alpha gal", "mammalian meat allergy",
+   "meat allergy", "tick allergy", "food allergy"]`) so their relative popularity can be compared
+   directly. This would allow the "terminology shift" question from the research plan to be tested.
+3. **Consider category 45 (Health)** as a sensitivity analysis, and Google Trends *Topics* for
+   alpha-gal syndrome, which pool spelling variants.
+4. **Pull state-level data** (`interest_by_region`) for the geographic analysis planned in the
+   research protocol.
+5. Minor: the downloader passes `tz=360` (UTC−6, US Central); Sydney is `tz=-600`. This has no
+   material effect on monthly data but should be corrected for daily or weekly pulls.
+
+# Session information {.unnumbered}
+
+```{r}
+#| label: session-info
+sessionInfo()
+```
