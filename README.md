@@ -34,7 +34,6 @@ aGal_infoepi/
 │   ├── figures/                           # Figures written by the .qmd (fig1–fig13, fig_s1–s3)
 │   └── processed_data/                    # Averaged Google Trends series, monthly media counts
 ├── old_analysis/                          # Earlier analysis (Feb–Mar 2026 downloads), kept for comparison
-│   ├── research_plan.md                   # Original research plan and methods rationale
 │   ├── code/                              # Earlier .qmd analyses and R helper functions
 │   ├── data/, mediacloud/, processed_data/, figures/
 ├── CSIRO_colours.R                        # CSIRO brand colour palette for plots
@@ -185,8 +184,7 @@ regenerates the figures and processed data.
 * MediaCloud covers online news only (no TV, radio or social media), its collection size changes
   over time, and off-topic filtering is title-based.
 
-For the full discussion, see the *Limitations* section of the analysis document and
-`old_analysis/research_plan.md`.
+For the full discussion, see the *Limitations* section of the analysis document.
 
 ---
 

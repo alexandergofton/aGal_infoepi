@@ -34,3 +34,6 @@ code/logs/
 *.log
 *.nohup
 nohup.out
+
+# ---- Private planning documents ----
+old_analysis/research_plan.md
